@@ -1,0 +1,4 @@
+interface:
+  display_name: "Google Workspace"
+  short_description: "Use Google Workspace through a bundled CLI"
+  default_prompt: "Use $google-workspace to search, read, or export Google Workspace content through the bundled CLI."

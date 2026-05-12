@@ -119,21 +119,21 @@ def main() -> int:
         client = GoogleWorkspaceClient(credentials)
         return args.func(client, args)
     except (GoogleWorkspaceSetupError, RefreshError) as error:
-        print(str(error), file=sys.stderr)
-        print(build_google_workspace_setup_text(), file=sys.stdout)
+        print(str(error), file=sys.stderr, flush=True)
+        print(build_google_workspace_setup_text(), file=sys.stdout, flush=True)
         return 1
     except HttpError as error:
-        print(f"Google API HTTP {error.status_code}: {error}", file=sys.stderr)
+        print(f"Google API HTTP {error.status_code}: {error}", file=sys.stderr, flush=True)
         if error.status_code in AUTH_SETUP_STATUSES:
-            print(build_google_workspace_setup_text(), file=sys.stdout)
+            print(build_google_workspace_setup_text(), file=sys.stdout, flush=True)
         return 1
     except GoogleWorkspaceError as error:
-        print(str(error), file=sys.stderr)
+        print(str(error), file=sys.stderr, flush=True)
         if error.status in AUTH_SETUP_STATUSES:
-            print(build_google_workspace_setup_text(), file=sys.stdout)
+            print(build_google_workspace_setup_text(), file=sys.stdout, flush=True)
         return 1
     except (RuntimeError, ValueError, OSError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+        print(str(error), file=sys.stderr, flush=True)
         return 1
 
 
@@ -250,13 +250,13 @@ def add_drive_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
 
 def cmd_setup(_client: GoogleWorkspaceClient | None, args: argparse.Namespace) -> int:
     if args.env_only:
-        print(build_google_workspace_env_setup_text().rstrip())
+        print(build_google_workspace_env_setup_text().rstrip(), flush=True)
     elif args.scopes_only:
-        print(build_google_workspace_scopes_text().rstrip())
+        print(build_google_workspace_scopes_text().rstrip(), flush=True)
     elif args.oauth_note:
-        print(build_google_workspace_oauth_note_text().rstrip())
+        print(build_google_workspace_oauth_note_text().rstrip(), flush=True)
     else:
-        print(build_google_workspace_setup_text().rstrip())
+        print(build_google_workspace_setup_text().rstrip(), flush=True)
     return 0
 
 
@@ -346,7 +346,7 @@ def cmd_docs_get_content(client: GoogleWorkspaceClient, args: argparse.Namespace
 
     if args.output:
         Path(args.output).expanduser().write_text(output["content"], encoding="utf-8")
-        print(f"Wrote {args.output}")
+        print(f"Wrote {args.output}", flush=True)
     else:
         emit_json(output)
     return 0
@@ -745,7 +745,7 @@ def parse_google_file_id(value: str) -> str:
 
 
 def emit_json(value: Any) -> None:
-    print(json.dumps(value, indent=2, ensure_ascii=False))
+    print(json.dumps(value, indent=2, ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

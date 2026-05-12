@@ -62,6 +62,13 @@ API_BASES = {
     "drive": "https://www.googleapis.com/drive/v3",
     "oauth2": "https://oauth2.googleapis.com",
 }
+EXIT_RUNTIME = 1
+EXIT_USAGE = 2
+EXIT_AUTH = 3
+EXIT_PERMISSION = 4
+EXIT_DOMAIN = 5
+OUTPUT_FORMAT = "human"
+STARTED_AT = time.perf_counter()
 
 
 class GoogleWorkspaceSetupError(RuntimeError):
@@ -108,10 +115,19 @@ class GoogleWorkspaceClient:
 
 
 def main() -> int:
+    global OUTPUT_FORMAT, STARTED_AT
+    STARTED_AT = time.perf_counter()
     args = build_parser().parse_args()
+    OUTPUT_FORMAT = args.output
     load_env_files([Path(path).expanduser() for path in args.env_file] if args.env_file else GOOGLE_WORKSPACE_ENV_FILES)
 
     try:
+        if args.schema:
+            emit_json(build_schema())
+            return 0
+        if not hasattr(args, "func"):
+            build_parser().print_usage(sys.stderr)
+            return EXIT_USAGE
         if not getattr(args, "requires_auth", True):
             return args.func(None, args)
 
@@ -119,41 +135,40 @@ def main() -> int:
         client = GoogleWorkspaceClient(credentials)
         return args.func(client, args)
     except (GoogleWorkspaceSetupError, RefreshError) as error:
-        print(str(error), file=sys.stderr, flush=True)
-        print(build_google_workspace_setup_text(), file=sys.stdout, flush=True)
-        return 1
+        return emit_error("missing_credentials", str(error), EXIT_AUTH, setup_text=build_google_workspace_setup_text())
     except HttpError as error:
-        print(f"Google API HTTP {error.status_code}: {error}", file=sys.stderr, flush=True)
-        if error.status_code in AUTH_SETUP_STATUSES:
-            print(build_google_workspace_setup_text(), file=sys.stdout, flush=True)
-        return 1
+        exit_code = EXIT_AUTH if error.status_code in AUTH_SETUP_STATUSES else EXIT_RUNTIME
+        return emit_error("google_api_error", f"Google API HTTP {error.status_code}: {error}", exit_code, setup_text=build_google_workspace_setup_text() if error.status_code in AUTH_SETUP_STATUSES else None)
     except GoogleWorkspaceError as error:
-        print(str(error), file=sys.stderr, flush=True)
-        if error.status in AUTH_SETUP_STATUSES:
-            print(build_google_workspace_setup_text(), file=sys.stdout, flush=True)
-        return 1
+        exit_code = EXIT_AUTH if error.status in AUTH_SETUP_STATUSES else EXIT_RUNTIME
+        return emit_error("google_api_error", str(error), exit_code, setup_text=build_google_workspace_setup_text() if error.status in AUTH_SETUP_STATUSES else None)
     except (RuntimeError, ValueError, OSError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr, flush=True)
-        return 1
+        return emit_error("runtime_error", str(error), EXIT_RUNTIME)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="google-workspace-cli",
-        description="Single-file Google Workspace CLI using ~/.google-workspace credentials.",
+        description=(
+            "Single-file Google Workspace CLI using ~/.google-workspace credentials. "
+            "Exit codes: 0 success, 1 runtime/API, 2 usage, 3 auth, 4 permission, 5 domain."
+        ),
     )
     parser.add_argument(
         "--env-file",
         action="append",
         help="Credential env file to load. Defaults to ~/.google-workspace/env and compatible fallbacks.",
     )
-    subparsers = parser.add_subparsers(required=True)
+    parser.add_argument("--output", choices=["human", "json"], default="human", help="Output format. JSON mode emits one envelope object.")
+    parser.add_argument("--schema", action="store_true", help="Print machine-readable command schema as JSON.")
+    subparsers = parser.add_subparsers()
 
     add_setup_parser(subparsers)
     add_auth_parser(subparsers)
     add_me_parser(subparsers)
     add_config_parser(subparsers)
     add_api_parser(subparsers)
+    add_schema_parser(subparsers)
     add_calendar_parser(subparsers)
     add_docs_parser(subparsers)
     add_drive_parser(subparsers)
@@ -199,6 +214,11 @@ def add_api_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParse
     parser.add_argument("--data", help="JSON request body, @file.json, or - for stdin.")
     parser.add_argument("--query", action="append", default=[], help="Append query params as key=value.")
     parser.set_defaults(func=cmd_api)
+
+
+def add_schema_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    parser = subparsers.add_parser("schema", help="Print machine-readable command schema.")
+    parser.set_defaults(func=cmd_schema, requires_auth=False)
 
 
 def add_calendar_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -250,13 +270,17 @@ def add_drive_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
 
 def cmd_setup(_client: GoogleWorkspaceClient | None, args: argparse.Namespace) -> int:
     if args.env_only:
-        print(build_google_workspace_env_setup_text().rstrip(), flush=True)
+        text = build_google_workspace_env_setup_text().rstrip()
     elif args.scopes_only:
-        print(build_google_workspace_scopes_text().rstrip(), flush=True)
+        text = build_google_workspace_scopes_text().rstrip()
     elif args.oauth_note:
-        print(build_google_workspace_oauth_note_text().rstrip(), flush=True)
+        text = build_google_workspace_oauth_note_text().rstrip()
     else:
-        print(build_google_workspace_setup_text().rstrip(), flush=True)
+        text = build_google_workspace_setup_text().rstrip()
+    if OUTPUT_FORMAT == "json":
+        emit_json({"text": text})
+    else:
+        print(text, flush=True)
     return 0
 
 
@@ -312,6 +336,11 @@ def cmd_api(client: GoogleWorkspaceClient, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_schema(_client: GoogleWorkspaceClient | None, _args: argparse.Namespace) -> int:
+    emit_json(build_schema())
+    return 0
+
+
 def cmd_calendar_list_events(client: GoogleWorkspaceClient, args: argparse.Namespace) -> int:
     service = client.service("calendar", "v3")
     time_min = args.time_min or dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -346,7 +375,9 @@ def cmd_docs_get_content(client: GoogleWorkspaceClient, args: argparse.Namespace
 
     if args.output:
         Path(args.output).expanduser().write_text(output["content"], encoding="utf-8")
-        print(f"Wrote {args.output}", flush=True)
+        print(f"Wrote {args.output}", file=sys.stderr, flush=True)
+        if OUTPUT_FORMAT == "json":
+            emit_json({"documentId": document_id, "title": doc.get("title", ""), "output": str(Path(args.output).expanduser())})
     else:
         emit_json(output)
     return 0
@@ -745,7 +776,80 @@ def parse_google_file_id(value: str) -> str:
 
 
 def emit_json(value: Any) -> None:
-    print(json.dumps(value, indent=2, ensure_ascii=False), flush=True)
+    if OUTPUT_FORMAT == "json":
+        payload = {
+            "status": "success",
+            "metadata": {"execution_time_ms": elapsed_ms(), "records_processed": count_records(value)},
+            "data": value,
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False), flush=True)
+    else:
+        print(json.dumps(value, indent=2, ensure_ascii=False), flush=True)
+
+
+def emit_error(code: str, message: str, exit_code: int, *, retryable: bool = False, setup_text: str | None = None) -> int:
+    if setup_text:
+        print(setup_text, file=sys.stderr, flush=True)
+    if OUTPUT_FORMAT == "json":
+        payload = {
+            "status": "error",
+            "metadata": {"execution_time_ms": elapsed_ms()},
+            "error": {"code": code, "message": message, "retryable": retryable},
+        }
+        print(json.dumps(payload, indent=2, ensure_ascii=False), flush=True)
+    else:
+        print(message, file=sys.stderr, flush=True)
+    return exit_code
+
+
+def elapsed_ms() -> int:
+    return int((time.perf_counter() - STARTED_AT) * 1000)
+
+
+def count_records(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        for key in ("events", "files", "tabs", "items", "data"):
+            item = value.get(key)
+            if isinstance(item, list):
+                return len(item)
+        return 1
+    return 1 if value is not None else 0
+
+
+def build_schema() -> dict[str, Any]:
+    return {
+        "tool": "google-workspace-cli",
+        "output": {
+            "formats": ["human", "json"],
+            "default": "human",
+            "json_envelope": {"status": "success|error", "metadata": "object", "data": "any", "error": "object"},
+        },
+        "credentials": {
+            "env_files": [str(path) for path in GOOGLE_WORKSPACE_ENV_FILES],
+            "token_env_vars": ["GOOGLE_WORKSPACE_CLIENT_SECRET_FILE", "GOOGLE_WORKSPACE_TOKEN_FILE", "GOOGLE_WORKSPACE_EMAIL"],
+            "legacy": ["GOOGLE_CREDENTIALS_FILE", "GOOGLE_TOKEN_FILE", "GOOGLE_EMAIL", str(LEGACY_RC_FILE)],
+        },
+        "exit_codes": {
+            "0": "success",
+            "1": "runtime/API/network/fatal error",
+            "2": "CLI syntax or argument error",
+            "3": "missing or invalid credentials",
+            "4": "permission denied or insufficient scopes",
+            "5": "validation, not found, conflict, or domain-specific failure",
+        },
+        "commands": {
+            "setup": {"auth": False, "args": ["--env-only", "--scopes-only", "--oauth-note"]},
+            "auth": {"auth": False, "subcommands": ["login", "status"]},
+            "me": {"auth": True},
+            "config": {"auth": False},
+            "api": {"auth": True, "args": ["method", "path", "--base", "--data", "--query"]},
+            "calendar": {"auth": True, "subcommands": ["list-events", "get-event"]},
+            "docs": {"auth": True, "subcommands": ["get-content", "list-tabs"]},
+            "drive": {"auth": True, "subcommands": ["search"]},
+        },
+    }
 
 
 if __name__ == "__main__":
